@@ -1,0 +1,11 @@
+{
+    "accept_threshold": 0.10147118097541313,
+    "uncertain_threshold": 0.15195485691253527,
+    "accept_target_error": 0.05,
+    "uncertain_target_error": 0.15,
+    "accept_actual_error": 0.04854368932038833,
+    "accept_coverage": 0.031127228770021154,
+    "uncertain_actual_error": 0.14583333333333337,
+    "temperature": 1.0136176347732544,
+    "validation_images": 3309
+}

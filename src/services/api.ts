@@ -4,36 +4,106 @@ import {
   DashboardStats,
   ModelMetrics,
   RobustnessMetrics,
-  AnalysisStage
+  AnalysisStage,
+  Decision,
+  DecisionFactor
 } from '../types';
+
 import {
   DEMO_CASES,
   MOCK_HISTORY,
   MOCK_DASHBOARD_STATS,
   MOCK_MODEL_METRICS,
   MOCK_ROBUSTNESS_METRICS,
-  SAMPLE_IMAGES
 } from '../data/mockData';
 
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 /**
- * Stage descriptions for multi-stage analysis workflow UI
+ * The upload UI may build a { name, type, dataUrl } object via
+ * FileReader.readAsDataURL() purely for image preview purposes.
+ * This converts that back into a real File so it can be sent as
+ * multipart/form-data to FastAPI.
  */
-export const ANALYSIS_STAGES: { id: AnalysisStage; label: string; detail: string }[] = [
-  { id: 'preprocessing', label: 'Image Preprocessing', detail: 'Normalizing pixel intensities, cropping thoracic ROI, resizing to 512x512' },
-  { id: 'feature_extraction', label: 'Deep Feature Extraction', detail: 'Extracting penultimate feature embeddings z via DenseNet-121 backbone' },
-  { id: 'classification', label: 'Pathology Classification', detail: 'Computing raw class logits for thoracic abnormalities' },
-  { id: 'calibration', label: 'Probability Calibration', detail: 'Applying learned temperature scaling (T=1.18) to minimize ECE' },
-  { id: 'mc_dropout', label: 'MC-Dropout Uncertainty Estimation', detail: 'Running 25 stochastic test-time passes to compute Mutual Information' },
-  { id: 'ood_detection', label: 'Mahalanobis OOD Detection', detail: 'Calculating distance to class-conditional Gaussian centroids' },
-  { id: 'decision', label: 'Safety Decision Engine', detail: 'Evaluating hierarchical triage criteria: Accept, Uncertain, or Abstain' }
+async function dataUrlToFile(
+  dataUrl: string,
+  filename: string,
+  mimeType: string
+): Promise<File> {
+  const res = await fetch(dataUrl);
+  const blob = await res.blob();
+  return new File([blob], filename, { type: mimeType || blob.type });
+}
+
+/**
+ * ClinSure analysis stages
+ *
+ * These descriptions reflect the actual ML pipeline:
+ * - 224x224 preprocessing
+ * - DenseNet-121
+ * - Temperature scaling
+ * - 10 stochastic uncertainty passes
+ * - Mahalanobis OOD detection
+ * - ACCEPT / UNCERTAIN / ABSTAIN decision layer
+ */
+export const ANALYSIS_STAGES: {
+  id: AnalysisStage;
+  label: string;
+  detail: string;
+}[] = [
+  {
+    id: 'preprocessing',
+    label: 'Image Preprocessing',
+    detail:
+      'Converting the X-ray to RGB, resizing to 224x224, and applying training-set normalization'
+  },
+  {
+    id: 'feature_extraction',
+    label: 'Deep Feature Extraction',
+    detail:
+      'Extracting 1024-dimensional features from the DenseNet-121 backbone'
+  },
+  {
+    id: 'classification',
+    label: 'Pathology Classification',
+    detail:
+      'Computing class logits for 15 chest X-ray findings'
+  },
+  {
+    id: 'calibration',
+    label: 'Probability Calibration',
+    detail:
+      'Applying learned temperature scaling with T=1.0136'
+  },
+  {
+    id: 'mc_dropout',
+    label: 'MC-Dropout Uncertainty Estimation',
+    detail:
+      'Running 10 stochastic passes to estimate predictive uncertainty'
+  },
+  {
+    id: 'ood_detection',
+    label: 'Mahalanobis OOD Detection',
+    detail:
+      'Measuring feature-space distance from the training distribution'
+  },
+  {
+    id: 'decision',
+    label: 'Safety Decision Engine',
+    detail:
+      'Evaluating calibrated confidence, uncertainty, and OOD risk for ACCEPT, UNCERTAIN, or ABSTAIN'
+  }
 ];
 
 /**
  * ClinSure API Service
- * Can toggle smoothly between the live FastAPI backend (when VITE_API_URL is provided)
- * and the local clinical simulation engine for offline research demo.
+ *
+ * The X-ray analysis uses the real FastAPI /predict endpoint
+ * when VITE_API_URL is configured.
+ *
+ * Other dashboard/history functions currently retain their
+ * local/mock fallback because those backend endpoints are not
+ * part of the current FastAPI service.
  */
 class ApiService {
   private inMemoryHistory: AnalysisHistoryItem[] = [...MOCK_HISTORY];
@@ -46,221 +116,390 @@ class ApiService {
     presetCaseId?: string,
     onProgress?: (stage: AnalysisStage, percent: number) => void
   ): Promise<AnalysisResult> {
-    // If live API endpoint configured, send multipart/form-data to FastAPI
-    if (API_BASE_URL) {
-      try {
-        const formData = new FormData();
-        if (file instanceof File) {
-          formData.append('file', file);
-        }
-        if (presetCaseId) {
-          formData.append('preset_id', presetCaseId);
-        }
+    const startTime = performance.now();
 
-        const response = await fetch(`${API_BASE_URL}/api/analyze`, {
-          method: 'POST',
-          body: formData,
-        });
+    // Normalize whatever the upload UI passed into a real File. Native
+    // <input type="file"> / drag-drop already gives us a File; the preview
+    // flow gives us a { name, type, dataUrl } object instead — convert that
+    // back into binary file data so FastAPI receives an actual upload.
+    const actualFile: File =
+      file instanceof File
+        ? file
+        : await dataUrlToFile(file.dataUrl, file.name, file.type);
 
-        if (!response.ok) {
-          throw new Error(`API Error: ${response.status} ${response.statusText}`);
-        }
-        return await response.json();
-      } catch (err) {
-        console.warn('Live API call failed or unavailable, falling back to clinical demo simulator:', err);
+    // -----------------------------------------
+    // 1. PREPROCESSING
+    // -----------------------------------------
+    onProgress?.('preprocessing', 15);
+
+    const formData = new FormData();
+    formData.append('file', actualFile);
+
+    try {
+      // -----------------------------------------
+      // 2. FEATURE EXTRACTION
+      // -----------------------------------------
+      onProgress?.('feature_extraction', 30);
+
+      if (!API_BASE_URL) {
+        throw new Error(
+          'VITE_API_URL is not configured. Please set the FastAPI server URL in .env.local.'
+        );
       }
-    }
 
-    // Mock Simulation with progressive stage callbacks
-    const stages: AnalysisStage[] = [
-      'preprocessing',
-      'feature_extraction',
-      'classification',
-      'calibration',
-      'mc_dropout',
-      'ood_detection',
-      'decision'
-    ];
+      // -----------------------------------------
+      // SEND IMAGE TO FASTAPI
+      // -----------------------------------------
+      const response = await fetch(`${API_BASE_URL}/predict`, {
+        method: 'POST',
+        body: formData,
+      });
 
-    for (let i = 0; i < stages.length; i++) {
-      if (onProgress) {
-        onProgress(stages[i], Math.round(((i + 1) / stages.length) * 100));
+      if (!response.ok) {
+        const errorText = await response.text();
+
+        throw new Error(
+          `Prediction API error (${response.status}): ${errorText}`
+        );
       }
-      // Realistic medical workstation computation delay per stage
-      await new Promise((resolve) => setTimeout(resolve, 380));
-    }
 
-    // If a preset was requested (e.g. Case 001, 002, 003), return that high-fidelity result
-    if (presetCaseId && DEMO_CASES[presetCaseId]) {
-      const demoResult = { ...DEMO_CASES[presetCaseId] };
-      this.recordInHistory(demoResult);
-      return demoResult;
-    }
+      // -----------------------------------------
+      // 3. CLASSIFICATION
+      // -----------------------------------------
+      onProgress?.('classification', 50);
 
-    // Otherwise generate dynamic result based on uploaded file
-    const isLikelyShift = file.name.toLowerCase().includes('shift') || file.name.toLowerCase().includes('ood') || file.name.toLowerCase().includes('icu');
-    const isLikelyNormal = file.name.toLowerCase().includes('normal');
-    
-    let generatedResult: AnalysisResult;
-    const newCaseId = `XR-2026-${String(Math.floor(Math.random() * 900) + 100).padStart(3, '0')}`;
-    const timestamp = new Date().toISOString().replace('T', ' ').substring(0, 19) + ' UTC';
+      const result = await response.json();
 
-    if (isLikelyShift) {
-      generatedResult = {
-        id: newCaseId,
-        timestamp,
-        patientId: `PT-${Math.floor(Math.random() * 899999 + 100000)}`,
-        patientAge: 64,
-        patientSex: 'M',
-        viewPosition: 'AP',
-        hospitalSource: 'Hospital C (Regional Bedside ICU)',
-        imageUri: SAMPLE_IMAGES.oodShift,
-        decision: 'ABSTAIN',
-        decisionHeadline: 'AI has abstained from making a reliable prediction',
-        decisionDescription: 'Elevated Mahalanobis distance indicates distribution shift (scanner noise, motion blur, or foreign artifacts).',
-        clinicalAction: 'Prediction withheld. Escalate to qualified radiologist.',
-        primaryPrediction: 'Pneumonia (Withheld)',
-        primaryProbability: 0.864,
-        predictions: [
-          { label: 'Pneumonia (Unreliable)', probability: 0.864, ciLower: 0.58, ciUpper: 0.93 },
-          { label: 'Atelectasis (Unreliable)', probability: 0.092, ciLower: 0.03, ciUpper: 0.18 },
-          { label: 'No Finding (Unreliable)', probability: 0.044, ciLower: 0.01, ciUpper: 0.09 }
-        ],
-        temperature: 1.18,
-        calibrated: true,
-        uncertainty: {
-          epistemicUncertainty: 0.84,
-          predictiveEntropy: 1.05,
-          mcDropoutVariance: 0.58,
-          aleatoricEntropy: 0.21,
-          samplesCount: 25,
-          level: 'High'
+      // -----------------------------------------
+      // 4. CALIBRATION
+      // -----------------------------------------
+      onProgress?.('calibration', 65);
+
+      // -----------------------------------------
+      // 5. MC-DROPOUT
+      // -----------------------------------------
+      onProgress?.('mc_dropout', 78);
+
+      // -----------------------------------------
+      // 6. OOD DETECTION
+      // -----------------------------------------
+      onProgress?.('ood_detection', 90);
+
+      /*
+       * Expected FastAPI response:
+       *
+       * {
+       *   prediction,
+       *   confidence,
+       *   uncertainty,
+       *   entropy,
+       *   ood_score,
+       *   composite_risk,
+       *   decision
+       * }
+       */
+
+      const prediction = String(result.prediction ?? 'Unknown');
+
+      const confidence = Number(
+        result.confidence ?? 0
+      );
+
+      const uncertainty = Number(
+        result.uncertainty ?? 0
+      );
+
+      const entropy = Number(
+        result.entropy ?? 0
+      );
+
+      const oodScore = Number(
+        result.ood_score ?? 0
+      );
+
+      const compositeRisk = Number(
+        result.composite_risk ?? 0
+      );
+
+      const decision: Decision =
+        result.decision === 'ACCEPT' ||
+        result.decision === 'UNCERTAIN' ||
+        result.decision === 'ABSTAIN'
+          ? result.decision
+          : 'ABSTAIN';
+
+      // -----------------------------------------
+      // DISPLAY UPLOADED IMAGE
+      // -----------------------------------------
+      const imageUri = URL.createObjectURL(actualFile);
+
+      // -----------------------------------------
+      // UNCERTAINTY LEVEL
+      // -----------------------------------------
+      let uncertaintyLevel:
+        | 'Low'
+        | 'Moderate'
+        | 'High';
+
+      if (uncertainty < 0.0002) {
+        uncertaintyLevel = 'Low';
+      } else if (uncertainty < 0.0005) {
+        uncertaintyLevel = 'Moderate';
+      } else {
+        uncertaintyLevel = 'High';
+      }
+
+      // -----------------------------------------
+      // DECISION TEXT
+      // -----------------------------------------
+      const decisionHeadline =
+        decision === 'ACCEPT'
+          ? 'Prediction considered sufficiently reliable'
+          : decision === 'UNCERTAIN'
+          ? 'Prediction requires additional review'
+          : 'AI has abstained from making a reliable prediction';
+
+      const decisionDescription =
+        decision === 'ACCEPT'
+          ? 'The calibrated model prediction passed the current safety decision thresholds.'
+          : decision === 'UNCERTAIN'
+          ? 'The model identified sufficient uncertainty that additional clinical review is recommended.'
+          : 'The safety layer withheld the prediction because the case did not meet the required reliability criteria.';
+
+      const clinicalAction =
+        decision === 'ACCEPT'
+          ? 'Prediction may be used as an automated draft and should still be clinically verified.'
+          : decision === 'UNCERTAIN'
+          ? 'Review the X-ray and model output before relying on the prediction.'
+          : 'Prediction withheld. Escalate to a qualified radiologist.';
+
+      // -----------------------------------------
+      // DECISION FACTORS
+      // -----------------------------------------
+      const decisionFactors: DecisionFactor[] = [
+        {
+          factor: 'Calibrated Confidence',
+          status:
+            confidence >= 0.8
+              ? 'pass'
+              : confidence >= 0.5
+              ? 'warning'
+              : 'fail',
+          description:
+            `Model confidence: ${(confidence * 100).toFixed(1)}%`,
         },
-        ood: {
-          mahalanobisDistance: 2.05,
-          oodThreshold: 1.50,
-          status: 'Potential Out-of-Distribution Case',
-          isOOD: true,
-          featureNorm: 29.8
+
+        {
+          factor: 'MC-Dropout Uncertainty',
+          status:
+            uncertainty < 0.0002
+              ? 'pass'
+              : uncertainty < 0.0005
+              ? 'warning'
+              : 'fail',
+          description:
+            `Uncertainty score: ${uncertainty.toFixed(6)}`,
         },
-        decisionFactors: [
-          { factor: 'Distributional Familiarity', status: 'fail', description: 'Mahalanobis distance 2.05 exceeds threshold 1.50' },
-          { factor: 'Epistemic Uncertainty', status: 'fail', description: 'High variance across MC-Dropout passes' },
-          { factor: 'Overconfidence Mitigation', status: 'warning', description: 'Raw model predicted 86.4% confidence, but case was safely blocked' }
-        ],
-        processingTimeMs: 1540
-      };
-    } else if (isLikelyNormal) {
-      generatedResult = {
-        id: newCaseId,
-        timestamp,
-        patientId: `PT-${Math.floor(Math.random() * 899999 + 100000)}`,
-        patientAge: 38,
-        patientSex: 'F',
+
+        {
+          factor: 'Mahalanobis OOD Score',
+          status:
+            oodScore < 1000
+              ? 'pass'
+              : oodScore < 2000
+              ? 'warning'
+              : 'fail',
+          description:
+            `OOD score: ${oodScore.toFixed(2)}`,
+        },
+
+        {
+          factor: 'Composite Safety Risk',
+          status:
+            compositeRisk <= 0.1015
+              ? 'pass'
+              : compositeRisk <= 0.152
+              ? 'warning'
+              : 'fail',
+          description:
+            `Composite risk: ${compositeRisk.toFixed(4)}`,
+        },
+      ];
+
+      // -----------------------------------------
+      // ANALYSIS RESULT
+      // -----------------------------------------
+      const analysisResult: AnalysisResult = {
+        id: `XR-${Date.now()}`,
+
+        timestamp:
+          new Date()
+            .toISOString()
+            .replace('T', ' ')
+            .substring(0, 19) + ' UTC',
+
+        /*
+         * The current /predict endpoint does not return
+         * patient metadata.
+         */
+        patientId: 'Not provided',
+        patientAge: 0,
+        patientSex: 'Other',
         viewPosition: 'PA',
-        hospitalSource: 'Hospital A (Outpatient Diagnostic Imaging)',
-        imageUri: SAMPLE_IMAGES.normal,
-        decision: 'ACCEPT',
-        decisionHeadline: 'Prediction considered sufficiently reliable',
-        decisionDescription: 'Standard upright PA radiograph with clear anatomical structures and low epistemic uncertainty.',
-        clinicalAction: 'Safe for automated draft documentation and clinical verification.',
-        primaryPrediction: 'No Finding',
-        primaryProbability: 0.962,
-        predictions: [
-          { label: 'No Finding', probability: 0.962, ciLower: 0.941, ciUpper: 0.981 },
-          { label: 'Pneumonia', probability: 0.024, ciLower: 0.009, ciUpper: 0.041 },
-          { label: 'Cardiomegaly', probability: 0.014, ciLower: 0.004, ciUpper: 0.025 }
-        ],
-        temperature: 1.18,
-        calibrated: true,
-        uncertainty: {
-          epistemicUncertainty: 0.12,
-          predictiveEntropy: 0.18,
-          mcDropoutVariance: 0.04,
-          aleatoricEntropy: 0.06,
-          samplesCount: 25,
-          level: 'Low'
-        },
-        ood: {
-          mahalanobisDistance: 0.68,
-          oodThreshold: 1.50,
-          status: 'In-Distribution',
-          isOOD: false,
-          featureNorm: 13.2
-        },
-        decisionFactors: [
-          { factor: 'Calibrated Confidence', status: 'pass', description: 'No Finding calibrated confidence is 96.2%' },
-          { factor: 'Epistemic Uncertainty', status: 'pass', description: 'Minimal parameter uncertainty (0.12)' },
-          { factor: 'Distributional Familiarity', status: 'pass', description: 'Conforms to in-distribution cluster geometry' }
-        ],
-        processingTimeMs: 1380
-      };
-    } else {
-      // Default to high-confidence Pneumonia Accept case
-      generatedResult = {
-        id: newCaseId,
-        timestamp,
-        patientId: `PT-${Math.floor(Math.random() * 899999 + 100000)}`,
-        patientAge: 54,
-        patientSex: 'M',
-        viewPosition: 'PA',
-        hospitalSource: 'Hospital A (Metropolitan Academic Center)',
-        imageUri: SAMPLE_IMAGES.pneumonia,
-        decision: 'ACCEPT',
-        decisionHeadline: 'Prediction considered sufficiently reliable',
-        decisionDescription: 'Calibrated confidence exceeds clinical threshold with minimal epistemic uncertainty and verified in-distribution feature geometry.',
-        clinicalAction: 'Eligible for automated pre-reporting and prioritized clinical queue.',
-        primaryPrediction: 'Pneumonia',
-        primaryProbability: 0.938,
-        predictions: [
-          { label: 'Pneumonia', probability: 0.938, ciLower: 0.908, ciUpper: 0.962 },
-          { label: 'No Finding', probability: 0.042, ciLower: 0.021, ciUpper: 0.065 },
-          { label: 'Pleural Effusion', probability: 0.014, ciLower: 0.006, ciUpper: 0.024 },
-          { label: 'Cardiomegaly', probability: 0.006, ciLower: 0.001, ciUpper: 0.012 }
-        ],
-        temperature: 1.18,
-        calibrated: true,
-        uncertainty: {
-          epistemicUncertainty: 0.19,
-          predictiveEntropy: 0.26,
-          mcDropoutVariance: 0.08,
-          aleatoricEntropy: 0.07,
-          samplesCount: 25,
-          level: 'Low'
-        },
-        ood: {
-          mahalanobisDistance: 0.85,
-          oodThreshold: 1.50,
-          status: 'In-Distribution',
-          isOOD: false,
-          featureNorm: 15.1
-        },
-        decisionFactors: [
-          { factor: 'Calibrated Confidence', status: 'pass', description: 'Calibrated confidence (93.8%) meets criteria' },
-          { factor: 'Epistemic Uncertainty', status: 'pass', description: 'MC-Dropout consensus is strong across passes' },
-          { factor: 'Distributional Familiarity', status: 'pass', description: 'In-distribution Mahalanobis distance 0.85' }
-        ],
-        processingTimeMs: 1450
-      };
-    }
+        hospitalSource: 'Uploaded X-ray',
 
-    this.recordInHistory(generatedResult);
-    return generatedResult;
+        imageUri,
+
+        decision,
+
+        decisionHeadline,
+
+        decisionDescription,
+
+        clinicalAction,
+
+        primaryPrediction: prediction,
+
+        primaryProbability: confidence,
+
+        /*
+         * Current FastAPI endpoint returns the top prediction
+         * rather than the complete 15-class probability vector.
+         */
+        predictions: [
+          {
+            label: prediction,
+            probability: confidence,
+            ciLower: confidence,
+            ciUpper: confidence,
+          },
+        ],
+
+        /*
+         * Learned temperature from validation calibration.
+         */
+        temperature: 1.0136176347732544,
+
+        calibrated: true,
+
+        // -----------------------------------------
+        // UNCERTAINTY
+        // -----------------------------------------
+        uncertainty: {
+          epistemicUncertainty: uncertainty,
+          predictiveEntropy: entropy,
+
+          /*
+           * The backend currently exposes the uncertainty
+           * value rather than a separately named variance.
+           */
+          mcDropoutVariance: uncertainty,
+
+          aleatoricEntropy: 0,
+
+          samplesCount: 10,
+
+          level: uncertaintyLevel,
+        },
+
+        // -----------------------------------------
+        // OOD
+        // -----------------------------------------
+        ood: {
+          mahalanobisDistance: oodScore,
+
+          /*
+           * The current backend does not expose the
+           * internal OOD threshold, so we do not claim
+           * a numeric threshold here.
+           */
+          oodThreshold: 0,
+
+          /*
+           * ABSTAIN is a safety decision, not necessarily
+           * proof of OOD. Therefore this status is based
+           * conservatively on the decision state.
+           */
+          status:
+            decision === 'ABSTAIN'
+              ? 'Potential Out-of-Distribution Case'
+              : decision === 'UNCERTAIN'
+              ? 'Borderline Shift'
+              : 'In-Distribution',
+
+          isOOD: decision === 'ABSTAIN',
+        },
+
+        decisionFactors,
+
+        isDemo: false,
+
+        processingTimeMs:
+          Math.round(performance.now() - startTime),
+      };
+
+      // -----------------------------------------
+      // COMPLETE
+      // -----------------------------------------
+      onProgress?.('decision', 100);
+      onProgress?.('complete', 100);
+
+      // Save locally for the current session.
+      this.recordInHistory(analysisResult);
+
+      return analysisResult;
+
+    } catch (error) {
+      console.error(
+        'FastAPI prediction failed:',
+        error
+      );
+
+      onProgress?.('error', 100);
+
+      throw new Error(
+        error instanceof Error
+          ? error.message
+          : 'Unable to connect to the ClinSure prediction server.'
+      );
+    }
   }
 
-  private recordInHistory(res: AnalysisResult) {
-    const existingIndex = this.inMemoryHistory.findIndex((h) => h.id === res.id);
+  /**
+   * Store analysis in the current browser session.
+   */
+  private recordInHistory(
+    res: AnalysisResult
+  ) {
+    const existingIndex =
+      this.inMemoryHistory.findIndex(
+        (h) => h.id === res.id
+      );
+
     const item: AnalysisHistoryItem = {
       id: res.id,
+
       timestamp: res.timestamp,
+
       patientId: res.patientId,
+
       prediction: res.primaryPrediction,
+
       confidence: res.primaryProbability,
-      epistemicUncertainty: res.uncertainty.epistemicUncertainty,
-      uncertaintyLevel: res.uncertainty.level,
-      oodScore: res.ood.mahalanobisDistance,
+
+      epistemicUncertainty:
+        res.uncertainty.epistemicUncertainty,
+
+      uncertaintyLevel:
+        res.uncertainty.level,
+
+      oodScore:
+        res.ood.mahalanobisDistance,
+
       decision: res.decision,
-      hospitalSource: res.hospitalSource
+
+      hospitalSource:
+        res.hospitalSource,
     };
 
     if (existingIndex >= 0) {
@@ -271,117 +510,144 @@ class ApiService {
   }
 
   /**
-   * Retrieve a specific analysis result by Case ID
+   * Retrieve a specific analysis result.
+   *
+   * The current FastAPI backend does not have
+   * a persistent /api/results endpoint, so the
+   * frontend uses the current session/demo data.
    */
-  async getAnalysisResult(id: string): Promise<AnalysisResult> {
-    if (API_BASE_URL) {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/results/${id}`);
-        if (res.ok) return await res.json();
-      } catch (e) {
-        console.warn('Failed to fetch from live API, checking local store', e);
-      }
-    }
+  async getAnalysisResult(
+    id: string
+  ): Promise<AnalysisResult> {
 
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await new Promise((resolve) =>
+      setTimeout(resolve, 200)
+    );
 
     if (DEMO_CASES[id]) {
       return DEMO_CASES[id];
     }
 
-    const foundInHistory = this.inMemoryHistory.find((h) => h.id === id);
+    const foundInHistory =
+      this.inMemoryHistory.find(
+        (h) => h.id === id
+      );
+
     if (foundInHistory) {
-      // Return synthetic full record based on history entry
       return {
         ...DEMO_CASES['XR-2026-001'],
+
         id: foundInHistory.id,
-        timestamp: foundInHistory.timestamp,
-        patientId: foundInHistory.patientId,
-        primaryPrediction: foundInHistory.prediction,
-        primaryProbability: foundInHistory.confidence,
-        decision: foundInHistory.decision,
+
+        timestamp:
+          foundInHistory.timestamp,
+
+        patientId:
+          foundInHistory.patientId,
+
+        primaryPrediction:
+          foundInHistory.prediction,
+
+        primaryProbability:
+          foundInHistory.confidence,
+
+        decision:
+          foundInHistory.decision,
+
         uncertainty: {
           ...DEMO_CASES['XR-2026-001'].uncertainty,
-          epistemicUncertainty: foundInHistory.epistemicUncertainty,
-          level: foundInHistory.uncertaintyLevel
+
+          epistemicUncertainty:
+            foundInHistory.epistemicUncertainty,
+
+          level:
+            foundInHistory.uncertaintyLevel,
         },
+
         ood: {
           ...DEMO_CASES['XR-2026-001'].ood,
-          mahalanobisDistance: foundInHistory.oodScore,
-          isOOD: foundInHistory.decision === 'ABSTAIN',
-          status: foundInHistory.decision === 'ABSTAIN' ? 'Potential Out-of-Distribution Case' : 'In-Distribution'
-        }
+
+          mahalanobisDistance:
+            foundInHistory.oodScore,
+
+          isOOD:
+            foundInHistory.decision === 'ABSTAIN',
+
+          status:
+            foundInHistory.decision === 'ABSTAIN'
+              ? 'Potential Out-of-Distribution Case'
+              : 'In-Distribution',
+        },
       };
     }
 
-    // Default fallback to XR-2026-001
     return DEMO_CASES['XR-2026-001'];
   }
 
   /**
-   * Get historical analyses
+   * Get analysis history.
+   *
+   * Currently uses the local in-memory session history.
+   */
+    /**
+   * Get analysis history.
+   *
+   * Currently uses the local in-memory session history.
    */
   async getAnalysisHistory(): Promise<AnalysisHistoryItem[]> {
-    if (API_BASE_URL) {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/history`);
-        if (res.ok) return await res.json();
-      } catch (e) {
-        console.warn('Failed to fetch history from live API, using mock', e);
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 200));
+    await new Promise((resolve) =>
+      setTimeout(resolve, 200)
+    );
+
     return [...this.inMemoryHistory];
   }
 
   /**
-   * Get dashboard summary statistics
+   * Get dashboard statistics.
+   *
+   * Currently uses the existing mock dashboard
+   * data with the current session history.
    */
   async getDashboardStats(): Promise<DashboardStats> {
-    if (API_BASE_URL) {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/dashboard/stats`);
-        if (res.ok) return await res.json();
-      } catch (e) {
-        console.warn('Failed to fetch stats from live API, using mock', e);
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) =>
+      setTimeout(resolve, 250)
+    );
+
     return {
       ...MOCK_DASHBOARD_STATS,
-      recentAnalyses: [...this.inMemoryHistory.slice(0, 10)]
+
+      recentAnalyses:
+        [...this.inMemoryHistory.slice(0, 10)],
     };
   }
 
   /**
-   * Get research model metrics & calibration diagrams
+   * Get research model metrics.
+   *
+   * The current FastAPI backend does not expose
+   * a model-metrics endpoint, so the existing
+   * frontend mock data is retained here.
    */
   async getModelMetrics(): Promise<ModelMetrics> {
-    if (API_BASE_URL) {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/model/metrics`);
-        if (res.ok) return await res.json();
-      } catch (e) {
-        console.warn('Failed to fetch model metrics from live API, using mock', e);
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 250));
+    await new Promise((resolve) =>
+      setTimeout(resolve, 250)
+    );
+
     return MOCK_MODEL_METRICS;
   }
 
   /**
-   * Get cross-hospital distribution shift and robustness data
+   * Get robustness metrics.
+   *
+   * The current FastAPI backend does not expose
+   * a robustness endpoint, so the existing
+   * frontend mock data is retained here.
    */
   async getRobustnessMetrics(): Promise<RobustnessMetrics> {
-    if (API_BASE_URL) {
-      try {
-        const res = await fetch(`${API_BASE_URL}/api/robustness/metrics`);
-        if (res.ok) return await res.json();
-      } catch (e) {
-        console.warn('Failed to fetch robustness metrics from live API, using mock', e);
-      }
-    }
-    await new Promise((resolve) => setTimeout(resolve, 300));
+    await new Promise((resolve) =>
+      setTimeout(resolve, 300)
+    );
+
     return MOCK_ROBUSTNESS_METRICS;
   }
 }

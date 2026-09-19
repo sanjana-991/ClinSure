@@ -1,0 +1,10 @@
+{
+    "checkpoint_epoch": 2,
+    "temperature": 1.0136176347732544,
+    "nll_before": 1.1834839582443237,
+    "nll_after": 1.1827702522277832,
+    "ece_before": 0.024036891758441925,
+    "ece_after": 0.01644359901547432,
+    "validation_images": 3309,
+    "num_bins": 10
+}

@@ -1,0 +1,10 @@
+{
+    "checkpoint_epoch": 2,
+    "mc_passes": 10,
+    "dropout_rate": 0.2,
+    "validation_images": 3309,
+    "mean_variance": 0.00020573324582073838,
+    "mean_entropy": 1.1347194910049438,
+    "mean_variance_correct": 0.00018232432194054127,
+    "mean_variance_incorrect": 0.00025666222791187465
+}

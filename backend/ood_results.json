@@ -1,0 +1,9 @@
+{
+    "checkpoint_epoch": 2,
+    "validation_images": 3309,
+    "noise_std": 0.2,
+    "normal_mean_score": 578.7469428658044,
+    "corrupted_mean_score": 2754.368363973513,
+    "AUROC": 0.9993342150189584,
+    "FPR95": 0.0015110305228165609
+}
