@@ -8,8 +8,6 @@ import {
   ChevronUp,
   ArrowRight,
   Shield,
-  Layers,
-  Sparkles,
   Scale
 } from 'lucide-react';
 import { DecisionBadge } from '../common/DecisionBadge';
@@ -20,6 +18,8 @@ interface DecisionFlowExplainerProps {
   confidence: number;
   uncertainty: number;
   oodScore: number;
+  temperature?: number;
+  oodThreshold?: number;
 }
 
 export const DecisionFlowExplainer: React.FC<DecisionFlowExplainerProps> = ({
@@ -28,6 +28,8 @@ export const DecisionFlowExplainer: React.FC<DecisionFlowExplainerProps> = ({
   confidence,
   uncertainty,
   oodScore,
+  temperature = 1.0136176347732544,
+  oodThreshold = 0,
 }) => {
   const [isExpanded, setIsExpanded] = useState<boolean>(true);
 
@@ -39,6 +41,7 @@ export const DecisionFlowExplainer: React.FC<DecisionFlowExplainerProps> = ({
             <Scale className="w-4 h-4 text-clinical-600" />
             <span>Tri-State Decision Engine Synthesis</span>
           </h3>
+
           <p className="text-xs text-slate-500 mt-0.5">
             Transparent multi-criteria gating before allowing autonomous clinical outputs
           </p>
@@ -50,11 +53,13 @@ export const DecisionFlowExplainer: React.FC<DecisionFlowExplainerProps> = ({
       {/* Visual Pipeline Flow */}
       <div className="bg-slate-50 rounded-xl p-3.5 border border-slate-200/70 mb-4 overflow-x-auto">
         <div className="flex items-center justify-between min-w-[580px] text-xs">
-          {/* Node 1: Raw Confidence */}
+
+          {/* Node 1: Confidence */}
           <div className="p-2.5 rounded-lg bg-white border border-slate-200 text-center shadow-soft-sm flex-1">
             <span className="text-[10px] uppercase font-semibold text-slate-400 block">
               1. Softmax Confidence
             </span>
+
             <span className="font-mono font-bold text-slate-800 text-sm">
               {(confidence * 100).toFixed(1)}%
             </span>
@@ -67,8 +72,9 @@ export const DecisionFlowExplainer: React.FC<DecisionFlowExplainerProps> = ({
             <span className="text-[10px] uppercase font-semibold text-slate-400 block">
               2. Temperature Scaling
             </span>
+
             <span className="font-mono font-bold text-sky-700 text-sm">
-              T = 1.18 (Calibrated)
+              T = {temperature.toFixed(4)} (Calibrated)
             </span>
           </div>
 
@@ -79,8 +85,15 @@ export const DecisionFlowExplainer: React.FC<DecisionFlowExplainerProps> = ({
             <span className="text-[10px] uppercase font-semibold text-slate-400 block">
               3. MC Epistemic
             </span>
-            <span className={`font-mono font-bold text-sm ${uncertainty > 0.4 ? 'text-amber-600' : 'text-emerald-700'}`}>
-              I = {uncertainty.toFixed(2)}
+
+            <span
+              className={`font-mono font-bold text-sm ${
+                uncertainty > 0.4
+                  ? 'text-amber-600'
+                  : 'text-emerald-700'
+              }`}
+            >
+              I = {uncertainty.toFixed(6)}
             </span>
           </div>
 
@@ -91,7 +104,14 @@ export const DecisionFlowExplainer: React.FC<DecisionFlowExplainerProps> = ({
             <span className="text-[10px] uppercase font-semibold text-slate-400 block">
               4. Mahalanobis OOD
             </span>
-            <span className={`font-mono font-bold text-sm ${oodScore > 1.5 ? 'text-rose-600' : 'text-emerald-700'}`}>
+
+            <span
+              className={`font-mono font-bold text-sm ${
+                oodScore > oodThreshold
+                  ? 'text-rose-600'
+                  : 'text-emerald-700'
+              }`}
+            >
               M = {oodScore.toFixed(2)}
             </span>
           </div>
@@ -105,7 +125,7 @@ export const DecisionFlowExplainer: React.FC<DecisionFlowExplainerProps> = ({
         </div>
       </div>
 
-      {/* Expandable "Why did ClinSure make this decision?" */}
+      {/* Why did ClinSure make this decision? */}
       <div className="border border-slate-200 rounded-lg overflow-hidden">
         <button
           onClick={() => setIsExpanded(!isExpanded)}
@@ -115,20 +135,30 @@ export const DecisionFlowExplainer: React.FC<DecisionFlowExplainerProps> = ({
             <Shield className="w-4 h-4 text-clinical-600" />
             <span>Why did ClinSure make this decision? ({decision})</span>
           </span>
-          {isExpanded ? <ChevronUp className="w-4 h-4 text-slate-500" /> : <ChevronDown className="w-4 h-4 text-slate-500" />}
+
+          {isExpanded ? (
+            <ChevronUp className="w-4 h-4 text-slate-500" />
+          ) : (
+            <ChevronDown className="w-4 h-4 text-slate-500" />
+          )}
         </button>
 
         {isExpanded && (
           <div className="p-4 space-y-3 divide-y divide-slate-100 text-xs">
             {factors.map((f, i) => (
-              <div key={i} className={`pt-2.5 first:pt-0 flex items-start gap-3`}>
+              <div
+                key={i}
+                className="pt-2.5 first:pt-0 flex items-start gap-3"
+              >
                 <div className="mt-0.5 shrink-0">
                   {f.status === 'pass' && (
                     <CheckCircle2 className="w-4 h-4 text-emerald-600" />
                   )}
+
                   {f.status === 'warning' && (
                     <AlertTriangle className="w-4 h-4 text-amber-500" />
                   )}
+
                   {f.status === 'fail' && (
                     <XCircle className="w-4 h-4 text-rose-600" />
                   )}
@@ -137,6 +167,7 @@ export const DecisionFlowExplainer: React.FC<DecisionFlowExplainerProps> = ({
                 <div className="flex-1">
                   <div className="font-semibold text-slate-800 flex items-center gap-2">
                     <span>{f.factor}</span>
+
                     <span
                       className={`text-[10px] font-mono px-1.5 py-0.2 rounded uppercase ${
                         f.status === 'pass'
@@ -149,14 +180,23 @@ export const DecisionFlowExplainer: React.FC<DecisionFlowExplainerProps> = ({
                       {f.status}
                     </span>
                   </div>
-                  <p className="text-slate-600 mt-0.5 leading-relaxed">{f.description}</p>
+
+                  <p className="text-slate-600 mt-0.5 leading-relaxed">
+                    {f.description}
+                  </p>
                 </div>
               </div>
             ))}
 
             <div className="pt-3 text-[11px] text-slate-500 bg-slate-50/50 -mx-4 -mb-4 p-3 border-t border-slate-100 rounded-b-lg">
-              <span className="font-semibold text-slate-700">Clinical Safeguard Rule: </span>
-              In ClinSure, any scan exceeding the Mahalanobis OOD threshold (&tau; &gt; 1.50) is immediately forced into <strong>ABSTAIN</strong>, regardless of how confident the softmax classifier appears. Scans with elevated epistemic variance (&gt; 0.35) or low confidence (&lt; 85%) trigger <strong>UNCERTAIN</strong>.
+              <span className="font-semibold text-slate-700">
+                Clinical Safeguard Rule:{' '}
+              </span>
+
+              The decision engine evaluates the live confidence, epistemic
+              uncertainty, OOD distance, and composite risk values returned
+              by the analysis pipeline. The final decision is determined by
+              the configured safety gates rather than by confidence alone.
             </div>
           </div>
         )}

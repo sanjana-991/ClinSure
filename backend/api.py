@@ -17,7 +17,10 @@ from torchvision import models, transforms
 # =========================
 
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-DEVICE = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+DEVICE = torch.device(
+    "cuda" if torch.cuda.is_available() else "cpu"
+)
 
 CLASSES = [
     "Atelectasis",
@@ -40,7 +43,10 @@ CLASSES = [
 MODEL_PATH = os.path.join(BASE_DIR, "model.pt")
 TEMP_PATH = os.path.join(BASE_DIR, "temperature.json")
 OOD_PATH = os.path.join(BASE_DIR, "ood_params.pkl")
-THRESHOLD_PATH = os.path.join(BASE_DIR, "decision_thresholds.json")
+THRESHOLD_PATH = os.path.join(
+    BASE_DIR,
+    "decision_thresholds.json"
+)
 
 
 # =========================
@@ -61,7 +67,9 @@ checkpoint = torch.load(
 )
 
 if isinstance(checkpoint, dict) and "model_state_dict" in checkpoint:
-    model.load_state_dict(checkpoint["model_state_dict"])
+    model.load_state_dict(
+        checkpoint["model_state_dict"]
+    )
 else:
     model.load_state_dict(checkpoint)
 
@@ -76,7 +84,9 @@ model.eval()
 with open(TEMP_PATH, "r") as f:
     temp_data = json.load(f)
 
-TEMPERATURE = float(temp_data["temperature"])
+TEMPERATURE = float(
+    temp_data["temperature"]
+)
 
 
 # =========================
@@ -97,7 +107,10 @@ cov_inv = ood_data["covariance_inv"]
 with open(THRESHOLD_PATH, "r") as f:
     threshold_data = json.load(f)
 
-ACCEPT_THRESHOLD = float(threshold_data["accept_threshold"])
+ACCEPT_THRESHOLD = float(
+    threshold_data["accept_threshold"]
+)
+
 UNCERTAIN_THRESHOLD = float(
     threshold_data["uncertain_threshold"]
 )
@@ -107,8 +120,17 @@ UNCERTAIN_THRESHOLD = float(
 # IMAGE TRANSFORM
 # =========================
 
-MEAN = [0.5407, 0.5407, 0.5407]
-STD = [0.2419, 0.2419, 0.2419]
+MEAN = [
+    0.5407,
+    0.5407,
+    0.5407
+]
+
+STD = [
+    0.2419,
+    0.2419,
+    0.2419
+]
 
 transform = transforms.Compose([
     transforms.Resize((224, 224)),
@@ -123,13 +145,21 @@ transform = transforms.Compose([
 
 app = FastAPI(
     title="Clinical AI Safety API",
-    description="Chest X-ray prediction with confidence, uncertainty and OOD detection",
+    description=(
+        "Chest X-ray prediction with "
+        "confidence, uncertainty and OOD detection"
+    ),
     version="1.0"
 )
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["http://localhost:3001", "http://127.0.0.1:3001"],
+    allow_origins=[
+        "http://localhost:3000",
+        "http://127.0.0.1:3000",
+        "http://localhost:3001",
+        "http://127.0.0.1:3001",
+    ],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -141,12 +171,20 @@ app.add_middleware(
 # =========================
 
 def get_features(x):
+
     features = model.features(x)
+
     features = torch.relu(features)
+
     features = torch.nn.functional.adaptive_avg_pool2d(
-        features, (1, 1)
+        features,
+        (1, 1)
     )
-    features = torch.flatten(features, 1)
+
+    features = torch.flatten(
+        features,
+        1
+    )
 
     return features
 
@@ -156,27 +194,45 @@ def get_features(x):
 # =========================
 
 def mahalanobis_score(feature):
-    feature = feature.detach().cpu().numpy()[0]
+
+    feature = (
+        feature
+        .detach()
+        .cpu()
+        .numpy()[0]
+    )
 
     scores = []
 
     for class_id in range(len(CLASSES)):
+
         mean = class_means[class_id]
 
         diff = feature - mean
 
-        score = diff @ cov_inv @ diff.T
+        score = (
+            diff
+            @ cov_inv
+            @ diff.T
+        )
 
-        scores.append(float(score))
+        scores.append(
+            float(score)
+        )
 
-    return float(min(scores))
+    return float(
+        min(scores)
+    )
 
 
 # =========================
 # MC DROPOUT
 # =========================
 
-def mc_dropout_prediction(x, passes=10):
+def mc_dropout_prediction(
+    x,
+    passes=10
+):
 
     features = get_features(x)
 
@@ -190,7 +246,9 @@ def mc_dropout_prediction(x, passes=10):
             training=True
         )
 
-        logits = model.classifier(dropped)
+        logits = model.classifier(
+            dropped
+        )
 
         probabilities = torch.softmax(
             logits,
@@ -198,21 +256,36 @@ def mc_dropout_prediction(x, passes=10):
         )
 
         predictions.append(
-            probabilities.detach().cpu().numpy()[0]
+            probabilities
+            .detach()
+            .cpu()
+            .numpy()[0]
         )
 
-    predictions = np.array(predictions)
-
-    mean_probability = predictions.mean(axis=0)
-
-    variance = predictions.var(axis=0).mean()
-
-    entropy = -np.sum(
-        mean_probability *
-        np.log(mean_probability + 1e-10)
+    predictions = np.array(
+        predictions
     )
 
-    return mean_probability, float(variance), float(entropy)
+    mean_probability = predictions.mean(
+        axis=0
+    )
+
+    variance = predictions.var(
+        axis=0
+    ).mean()
+
+    entropy = -np.sum(
+        mean_probability
+        * np.log(
+            mean_probability + 1e-10
+        )
+    )
+
+    return (
+        mean_probability,
+        float(variance),
+        float(entropy)
+    )
 
 
 # =========================
@@ -226,7 +299,12 @@ def health():
         "status": "ok",
         "device": str(DEVICE),
         "model": "DenseNet-121",
-        "classes": len(CLASSES)
+        "classes": len(CLASSES),
+        "temperature": TEMPERATURE,
+        "mc_dropout_passes": 10,
+        "accept_threshold": ACCEPT_THRESHOLD,
+        "uncertain_threshold": UNCERTAIN_THRESHOLD,
+        "ood_threshold_configured": False
     }
 
 
@@ -235,32 +313,47 @@ def health():
 # =========================
 
 @app.post("/predict")
-async def predict(file: UploadFile = File(...)):
+async def predict(
+    file: UploadFile = File(...)
+):
 
-    # Read image
+    # =========================
+    # READ IMAGE
+    # =========================
+
     contents = await file.read()
 
     try:
+
         image = Image.open(
             io.BytesIO(contents)
         ).convert("RGB")
+
     except Exception:
+
         return {
-            "error": "Uploaded file is not a valid image. Please upload a JPG, PNG, or similar image file."
+            "error": (
+                "Uploaded file is not a valid image. "
+                "Please upload a JPG, PNG, or similar image file."
+            )
         }
 
-    x = transform(image).unsqueeze(0).to(DEVICE)
+    x = transform(
+        image
+    ).unsqueeze(0).to(DEVICE)
 
 
-    # -------------------------
-    # Standard prediction
-    # -------------------------
+    # =========================
+    # STANDARD PREDICTION
+    # =========================
 
     with torch.no_grad():
 
         logits = model(x)
 
-        calibrated_logits = logits / TEMPERATURE
+        calibrated_logits = (
+            logits / TEMPERATURE
+        )
 
         probabilities = torch.softmax(
             calibrated_logits,
@@ -272,62 +365,96 @@ async def predict(file: UploadFile = File(...)):
             dim=1
         )
 
-    predicted_id = int(predicted.item())
+    predicted_id = int(
+        predicted.item()
+    )
 
-    confidence = float(confidence.item())
+    confidence = float(
+        confidence.item()
+    )
 
-    predicted_class = CLASSES[predicted_id]
+    predicted_class = CLASSES[
+        predicted_id
+    ]
 
 
-    # -------------------------
-    # MC Dropout
-    # -------------------------
+    # =========================
+    # FULL PROBABILITY DISTRIBUTION
+    # =========================
+
+    probability_values = (
+        probabilities
+        .detach()
+        .cpu()
+        .numpy()[0]
+    )
+
+    class_probabilities = {
+        CLASSES[i]: round(
+            float(probability_values[i]),
+            6
+        )
+        for i in range(len(CLASSES))
+    }
+
+
+    # =========================
+    # MC DROPOUT
+    # =========================
 
     with torch.no_grad():
 
-        mc_prob, uncertainty, entropy = \
-            mc_dropout_prediction(x, passes=10)
+        (
+            mc_prob,
+            uncertainty,
+            entropy
+        ) = mc_dropout_prediction(
+            x,
+            passes=10
+        )
 
 
-    # -------------------------
-    # Mahalanobis OOD
-    # -------------------------
+    # =========================
+    # MAHALANOBIS OOD
+    # =========================
 
     with torch.no_grad():
 
         feature = get_features(x)
 
-        ood_score = mahalanobis_score(feature)
+        ood_score = mahalanobis_score(
+            feature
+        )
 
 
-    # -------------------------
-    # Composite risk
-    # -------------------------
+    # =========================
+    # COMPOSITE RISK
+    # =========================
 
-    confidence_risk = 1.0 - confidence
+    confidence_risk = (
+        1.0 - confidence
+    )
 
-    # Normalize uncertainty approximately
     uncertainty_risk = min(
         uncertainty / 0.001,
         1.0
     )
 
-    # OOD score normalization
     ood_risk = min(
         ood_score / 3000.0,
         1.0
     )
 
     composite_risk = (
-        confidence_risk +
-        uncertainty_risk +
-        ood_risk
+        confidence_risk
+        + uncertainty_risk
+        + ood_risk
     ) / 3.0
 
 
-    # -------------------------
-    # Decision
-    # -------------------------
+    # =========================
+    # DECISION
+    # =========================
 
     if composite_risk <= ACCEPT_THRESHOLD:
 
@@ -342,13 +469,87 @@ async def predict(file: UploadFile = File(...)):
         decision = "ABSTAIN"
 
 
+    # =========================
+    # RISK COMPONENTS
+    # =========================
+
+    risk_components = {
+        "confidence_risk": round(
+            confidence_risk,
+            6
+        ),
+        "uncertainty_risk": round(
+            uncertainty_risk,
+            6
+        ),
+        "ood_risk": round(
+            ood_risk,
+            6
+        )
+    }
+
+
+    # =========================
+    # FINAL RESPONSE
+    # =========================
+
     return {
+
         "filename": file.filename,
+
+        # Prediction
         "prediction": predicted_class,
-        "confidence": round(confidence, 4),
-        "uncertainty": round(uncertainty, 6),
-        "entropy": round(entropy, 4),
-        "ood_score": round(ood_score, 4),
-        "composite_risk": round(composite_risk, 4),
+        "confidence": round(
+            confidence,
+            4
+        ),
+
+        # Calibration
+        "temperature": round(
+            TEMPERATURE,
+            6
+        ),
+        "calibrated": True,
+
+        # All 15 classes
+        "probabilities": class_probabilities,
+
+        # Uncertainty
+        "uncertainty": round(
+            uncertainty,
+            6
+        ),
+        "entropy": round(
+            entropy,
+            4
+        ),
+        "mc_dropout_passes": 10,
+
+        # OOD
+        "ood_score": round(
+            ood_score,
+            4
+        ),
+        "ood_threshold": None,
+        "ood_threshold_configured": False,
+
+        # Risk
+        "risk_components": risk_components,
+        "composite_risk": round(
+            composite_risk,
+            4
+        ),
+
+        # Decision thresholds
+        "accept_threshold": round(
+            ACCEPT_THRESHOLD,
+            6
+        ),
+        "uncertain_threshold": round(
+            UNCERTAIN_THRESHOLD,
+            6
+        ),
+
+        # Decision
         "decision": decision
     }

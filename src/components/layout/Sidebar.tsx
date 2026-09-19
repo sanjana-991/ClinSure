@@ -214,9 +214,11 @@ export const Sidebar: React.FC<SidebarProps> = ({ isOpen, onClose }) => {
               </span>
             </div>
             <div className="text-[11px] text-slate-400 flex items-center justify-between">
-              <span>MC-Dropout: 25 passes</span>
-              <span className="font-mono text-[10px] text-slate-400">T=1.18</span>
-            </div>
+  <span>MC-Dropout: Live analysis</span>
+  <span className="font-mono text-[10px] text-slate-400">
+    Backend calibrated
+  </span>
+</div>
           </div>
 
           {/* Clinical Disclaimer Tag */}

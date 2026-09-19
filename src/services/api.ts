@@ -6,7 +6,7 @@ import {
   RobustnessMetrics,
   AnalysisStage,
   Decision,
-  DecisionFactor
+  DecisionFactor,
 } from '../types';
 
 import {
@@ -20,10 +20,16 @@ import {
 const API_BASE_URL = import.meta.env.VITE_API_URL || '';
 
 /**
- * The upload UI may build a { name, type, dataUrl } object via
- * FileReader.readAsDataURL() purely for image preview purposes.
- * This converts that back into a real File so it can be sent as
- * multipart/form-data to FastAPI.
+ * Live results returned by the real FastAPI backend.
+ *
+ * ResultsPage uses this exact object so live results are never
+ * rebuilt from demo/mock data.
+ */
+const inMemoryResults: Record<string, AnalysisResult> = {};
+
+
+/**
+ * Convert the upload-preview data URL back into a real File.
  */
 async function dataUrlToFile(
   dataUrl: string,
@@ -32,19 +38,19 @@ async function dataUrlToFile(
 ): Promise<File> {
   const res = await fetch(dataUrl);
   const blob = await res.blob();
-  return new File([blob], filename, { type: mimeType || blob.type });
+
+  return new File(
+    [blob],
+    filename,
+    {
+      type: mimeType || blob.type,
+    }
+  );
 }
 
+
 /**
- * ClinSure analysis stages
- *
- * These descriptions reflect the actual ML pipeline:
- * - 224x224 preprocessing
- * - DenseNet-121
- * - Temperature scaling
- * - 10 stochastic uncertainty passes
- * - Mahalanobis OOD detection
- * - ACCEPT / UNCERTAIN / ABSTAIN decision layer
+ * ClinSure analysis stages.
  */
 export const ANALYSIS_STAGES: {
   id: AnalysisStage;
@@ -55,171 +61,263 @@ export const ANALYSIS_STAGES: {
     id: 'preprocessing',
     label: 'Image Preprocessing',
     detail:
-      'Converting the X-ray to RGB, resizing to 224x224, and applying training-set normalization'
+      'Converting the X-ray to RGB, resizing to 224x224, and applying training-set normalization',
   },
   {
     id: 'feature_extraction',
     label: 'Deep Feature Extraction',
     detail:
-      'Extracting 1024-dimensional features from the DenseNet-121 backbone'
+      'Extracting 1024-dimensional features from the DenseNet-121 backbone',
   },
   {
     id: 'classification',
     label: 'Pathology Classification',
     detail:
-      'Computing class logits for 15 chest X-ray findings'
+      'Computing class logits for 15 chest X-ray findings',
   },
   {
     id: 'calibration',
     label: 'Probability Calibration',
     detail:
-      'Applying learned temperature scaling with T=1.0136'
+      'Applying learned temperature scaling using the calibrated temperature from the backend',
   },
   {
     id: 'mc_dropout',
     label: 'MC-Dropout Uncertainty Estimation',
     detail:
-      'Running 10 stochastic passes to estimate predictive uncertainty'
+      'Running stochastic passes to estimate predictive uncertainty',
   },
   {
     id: 'ood_detection',
     label: 'Mahalanobis OOD Detection',
     detail:
-      'Measuring feature-space distance from the training distribution'
+      'Measuring feature-space distance from the training distribution',
   },
   {
     id: 'decision',
     label: 'Safety Decision Engine',
     detail:
-      'Evaluating calibrated confidence, uncertainty, and OOD risk for ACCEPT, UNCERTAIN, or ABSTAIN'
-  }
+      'Evaluating calibrated confidence, uncertainty, OOD risk, and composite safety risk',
+  },
 ];
 
-/**
- * ClinSure API Service
- *
- * The X-ray analysis uses the real FastAPI /predict endpoint
- * when VITE_API_URL is configured.
- *
- * Other dashboard/history functions currently retain their
- * local/mock fallback because those backend endpoints are not
- * part of the current FastAPI service.
- */
+
 class ApiService {
-  private inMemoryHistory: AnalysisHistoryItem[] = [...MOCK_HISTORY];
+  private inMemoryHistory: AnalysisHistoryItem[] = [
+    ...MOCK_HISTORY,
+  ];
+
 
   /**
-   * Upload and analyze a chest X-ray file
+   * Upload and analyze a chest X-ray.
    */
   async analyzeXRay(
-    file: File | { name: string; type: string; dataUrl: string },
+    file:
+      | File
+      | {
+          name: string;
+          type: string;
+          dataUrl: string;
+        },
     presetCaseId?: string,
-    onProgress?: (stage: AnalysisStage, percent: number) => void
+    onProgress?: (
+      stage: AnalysisStage,
+      percent: number
+    ) => void
   ): Promise<AnalysisResult> {
+
     const startTime = performance.now();
 
-    // Normalize whatever the upload UI passed into a real File. Native
-    // <input type="file"> / drag-drop already gives us a File; the preview
-    // flow gives us a { name, type, dataUrl } object instead — convert that
-    // back into binary file data so FastAPI receives an actual upload.
+    void presetCaseId;
+
+
+    // =========================================
+    // NORMALIZE FILE
+    // =========================================
+
     const actualFile: File =
       file instanceof File
         ? file
-        : await dataUrlToFile(file.dataUrl, file.name, file.type);
+        : await dataUrlToFile(
+            file.dataUrl,
+            file.name,
+            file.type
+          );
 
-    // -----------------------------------------
-    // 1. PREPROCESSING
-    // -----------------------------------------
-    onProgress?.('preprocessing', 15);
+
+    // =========================================
+    // PREPROCESSING
+    // =========================================
+
+    onProgress?.(
+      'preprocessing',
+      15
+    );
+
 
     const formData = new FormData();
-    formData.append('file', actualFile);
+
+    formData.append(
+      'file',
+      actualFile
+    );
+
 
     try {
-      // -----------------------------------------
-      // 2. FEATURE EXTRACTION
-      // -----------------------------------------
-      onProgress?.('feature_extraction', 30);
+
+      // =========================================
+      // FEATURE EXTRACTION
+      // =========================================
+
+      onProgress?.(
+        'feature_extraction',
+        30
+      );
+
 
       if (!API_BASE_URL) {
         throw new Error(
-          'VITE_API_URL is not configured. Please set the FastAPI server URL in .env.local.'
+          'VITE_API_URL is not configured. Please set the FastAPI server URL in .env.'
         );
       }
 
-      // -----------------------------------------
-      // SEND IMAGE TO FASTAPI
-      // -----------------------------------------
-      const response = await fetch(`${API_BASE_URL}/predict`, {
-        method: 'POST',
-        body: formData,
-      });
+
+      // =========================================
+      // SEND TO FASTAPI
+      // =========================================
+
+      const response = await fetch(
+        `${API_BASE_URL}/predict`,
+        {
+          method: 'POST',
+          body: formData,
+        }
+      );
+
 
       if (!response.ok) {
-        const errorText = await response.text();
+
+        const errorText =
+          await response.text();
 
         throw new Error(
           `Prediction API error (${response.status}): ${errorText}`
         );
       }
 
-      // -----------------------------------------
-      // 3. CLASSIFICATION
-      // -----------------------------------------
-      onProgress?.('classification', 50);
 
-      const result = await response.json();
+      // =========================================
+      // CLASSIFICATION
+      // =========================================
 
-      // -----------------------------------------
-      // 4. CALIBRATION
-      // -----------------------------------------
-      onProgress?.('calibration', 65);
-
-      // -----------------------------------------
-      // 5. MC-DROPOUT
-      // -----------------------------------------
-      onProgress?.('mc_dropout', 78);
-
-      // -----------------------------------------
-      // 6. OOD DETECTION
-      // -----------------------------------------
-      onProgress?.('ood_detection', 90);
-
-      /*
-       * Expected FastAPI response:
-       *
-       * {
-       *   prediction,
-       *   confidence,
-       *   uncertainty,
-       *   entropy,
-       *   ood_score,
-       *   composite_risk,
-       *   decision
-       * }
-       */
-
-      const prediction = String(result.prediction ?? 'Unknown');
-
-      const confidence = Number(
-        result.confidence ?? 0
+      onProgress?.(
+        'classification',
+        50
       );
 
-      const uncertainty = Number(
-        result.uncertainty ?? 0
+
+      const result =
+        await response.json();
+
+
+      // =========================================
+      // CALIBRATION
+      // =========================================
+
+      onProgress?.(
+        'calibration',
+        65
       );
 
-      const entropy = Number(
-        result.entropy ?? 0
+
+      // =========================================
+      // MC DROPOUT
+      // =========================================
+
+      onProgress?.(
+        'mc_dropout',
+        78
       );
 
-      const oodScore = Number(
-        result.ood_score ?? 0
+
+      // =========================================
+      // OOD
+      // =========================================
+
+      onProgress?.(
+        'ood_detection',
+        90
       );
 
-      const compositeRisk = Number(
-        result.composite_risk ?? 0
-      );
+
+      // =========================================
+      // READ BACKEND VALUES
+      // =========================================
+
+      const prediction =
+        String(
+          result.prediction ??
+          'Unknown'
+        );
+
+
+      const confidence =
+        Number(
+          result.confidence ?? 0
+        );
+
+
+      const temperature =
+        Number(
+          result.temperature ?? 1
+        );
+
+
+      const uncertainty =
+        Number(
+          result.uncertainty ?? 0
+        );
+
+
+      const entropy =
+        Number(
+          result.entropy ?? 0
+        );
+
+
+      const oodScore =
+        Number(
+          result.ood_score ?? 0
+        );
+
+
+      const compositeRisk =
+        Number(
+          result.composite_risk ?? 0
+        );
+
+
+      const acceptThreshold =
+        Number(
+          result.accept_threshold ?? 0
+        );
+
+
+      const uncertainThreshold =
+        Number(
+          result.uncertain_threshold ?? 0
+        );
+
+
+      const samplesCount =
+        Number(
+          result.mc_dropout_passes ?? 10
+        );
+
+
+      const calibrated =
+        result.calibrated !== false;
+
 
       const decision: Decision =
         result.decision === 'ACCEPT' ||
@@ -228,43 +326,120 @@ class ApiService {
           ? result.decision
           : 'ABSTAIN';
 
-      // -----------------------------------------
-      // DISPLAY UPLOADED IMAGE
-      // -----------------------------------------
-      const imageUri = URL.createObjectURL(actualFile);
 
-      // -----------------------------------------
+      // =========================================
+      // FULL 15-CLASS PROBABILITY DISTRIBUTION
+      // =========================================
+
+      const backendProbabilities =
+        result.probabilities ?? {};
+
+
+      const predictions = Object.entries(
+        backendProbabilities
+      )
+        .map(
+          ([label, value]) => {
+
+            const probability =
+              Number(value);
+
+            return {
+              label,
+              probability,
+
+              /*
+               * The backend currently does not return
+               * confidence intervals.
+               *
+               * Therefore we do NOT invent a CI.
+               * The displayed bounds equal the actual
+               * probability until CI calculation is
+               * implemented by the backend.
+               */
+              ciLower: probability,
+              ciUpper: probability,
+            };
+          }
+        )
+        .sort(
+          (a, b) =>
+            b.probability -
+            a.probability
+        );
+
+
+      // Safety fallback if backend probabilities
+      // are unexpectedly missing.
+      if (predictions.length === 0) {
+
+        predictions.push({
+          label: prediction,
+          probability: confidence,
+          ciLower: confidence,
+          ciUpper: confidence,
+        });
+      }
+
+
+      // =========================================
+      // IMAGE PREVIEW
+      // =========================================
+
+      const imageUri =
+        URL.createObjectURL(
+          actualFile
+        );
+
+
+      // =========================================
       // UNCERTAINTY LEVEL
-      // -----------------------------------------
+      // =========================================
+
       let uncertaintyLevel:
         | 'Low'
         | 'Moderate'
         | 'High';
 
+
       if (uncertainty < 0.0002) {
-        uncertaintyLevel = 'Low';
-      } else if (uncertainty < 0.0005) {
-        uncertaintyLevel = 'Moderate';
+
+        uncertaintyLevel =
+          'Low';
+
+      } else if (
+        uncertainty < 0.0005
+      ) {
+
+        uncertaintyLevel =
+          'Moderate';
+
       } else {
-        uncertaintyLevel = 'High';
+
+        uncertaintyLevel =
+          'High';
       }
 
-      // -----------------------------------------
+
+      // =========================================
       // DECISION TEXT
-      // -----------------------------------------
+      // =========================================
+
       const decisionHeadline =
         decision === 'ACCEPT'
-          ? 'Prediction considered sufficiently reliable'
+          ? 'Prediction passed the configured safety threshold'
           : decision === 'UNCERTAIN'
           ? 'Prediction requires additional review'
           : 'AI has abstained from making a reliable prediction';
 
+
       const decisionDescription =
         decision === 'ACCEPT'
-          ? 'The calibrated model prediction passed the current safety decision thresholds.'
+          ? `Composite risk ${compositeRisk.toFixed(4)} is within the configured ACCEPT threshold of ${acceptThreshold.toFixed(4)}.`
           : decision === 'UNCERTAIN'
-          ? 'The model identified sufficient uncertainty that additional clinical review is recommended.'
-          : 'The safety layer withheld the prediction because the case did not meet the required reliability criteria.';
+          ? `Composite risk ${compositeRisk.toFixed(4)} falls between the configured ACCEPT and UNCERTAIN thresholds.`
+          : `Composite risk ${compositeRisk.toFixed(4)} exceeds the configured UNCERTAIN threshold of ${uncertainThreshold.toFixed(4)}.`;
+
 
       const clinicalAction =
         decision === 'ACCEPT'
@@ -273,189 +448,292 @@ class ApiService {
           ? 'Review the X-ray and model output before relying on the prediction.'
           : 'Prediction withheld. Escalate to a qualified radiologist.';
 
-      // -----------------------------------------
+
+      // =========================================
       // DECISION FACTORS
-      // -----------------------------------------
+      // =========================================
+
       const decisionFactors: DecisionFactor[] = [
-        {
-          factor: 'Calibrated Confidence',
-          status:
-            confidence >= 0.8
-              ? 'pass'
-              : confidence >= 0.5
-              ? 'warning'
-              : 'fail',
-          description:
-            `Model confidence: ${(confidence * 100).toFixed(1)}%`,
-        },
 
         {
-          factor: 'MC-Dropout Uncertainty',
+          factor:
+            'Calibrated Confidence',
+
+          /*
+           * No independent confidence threshold is
+           * configured in the backend.
+           *
+           * Therefore this factor is informational,
+           * not a fabricated pass/fail safety rule.
+           */
           status:
-            uncertainty < 0.0002
-              ? 'pass'
-              : uncertainty < 0.0005
-              ? 'warning'
-              : 'fail',
+            'warning',
+
           description:
-            `Uncertainty score: ${uncertainty.toFixed(6)}`,
+            `Calibrated confidence: ${(confidence * 100).toFixed(1)}%`,
         },
 
-        {
-          factor: 'Mahalanobis OOD Score',
-          status:
-            oodScore < 1000
-              ? 'pass'
-              : oodScore < 2000
-              ? 'warning'
-              : 'fail',
-          description:
-            `OOD score: ${oodScore.toFixed(2)}`,
-        },
 
         {
-          factor: 'Composite Safety Risk',
+          factor:
+            'MC-Dropout Uncertainty',
+
+          /*
+           * The backend computes this value directly.
+           * We report it without inventing a safety
+           * threshold.
+           */
           status:
-            compositeRisk <= 0.1015
+            uncertaintyLevel === 'High'
+              ? 'fail'
+              : uncertaintyLevel === 'Moderate'
+              ? 'warning'
+              : 'pass',
+
+          description:
+            `Uncertainty: ${uncertainty.toFixed(6)} across ${samplesCount} stochastic passes`,
+        },
+
+
+        {
+          factor:
+            'Mahalanobis OOD Distance',
+
+          /*
+           * No OOD threshold is configured in the
+           * current backend, so we cannot truthfully
+           * label this score pass/fail.
+           */
+          status:
+            'warning',
+
+          description:
+            `Mahalanobis distance: ${oodScore.toFixed(2)} • threshold not configured`,
+        },
+
+
+        {
+          factor:
+            'Composite Safety Risk',
+
+          status:
+            compositeRisk <=
+            acceptThreshold
               ? 'pass'
-              : compositeRisk <= 0.152
+              : compositeRisk <=
+                uncertainThreshold
               ? 'warning'
               : 'fail',
+
           description:
-            `Composite risk: ${compositeRisk.toFixed(4)}`,
+            `Risk: ${compositeRisk.toFixed(4)} • ACCEPT ≤ ${acceptThreshold.toFixed(4)} • UNCERTAIN ≤ ${uncertainThreshold.toFixed(4)}`,
         },
       ];
 
-      // -----------------------------------------
+
+      // =========================================
+      // OOD STATUS
+      // =========================================
+
+      /*
+       * IMPORTANT:
+       *
+       * An ABSTAIN decision does NOT automatically
+       * mean the image is OOD.
+       *
+       * The current backend calculates a Mahalanobis
+       * distance but does not configure/return an OOD
+       * threshold.
+       */
+
+      const oodStatus =
+        'Potential Out-of-Distribution Case';
+
+
+      // We cannot truthfully say isOOD=true
+      // without an actual configured OOD threshold.
+      const isOOD = false;
+
+
+      // =========================================
       // ANALYSIS RESULT
-      // -----------------------------------------
+      // =========================================
+
       const analysisResult: AnalysisResult = {
-        id: `XR-${Date.now()}`,
+
+        id:
+          `XR-${Date.now()}`,
+
 
         timestamp:
           new Date()
             .toISOString()
             .replace('T', ' ')
-            .substring(0, 19) + ' UTC',
+            .substring(0, 19) +
+          ' UTC',
 
-        /*
-         * The current /predict endpoint does not return
-         * patient metadata.
-         */
-        patientId: 'Not provided',
-        patientAge: 0,
-        patientSex: 'Other',
-        viewPosition: 'PA',
-        hospitalSource: 'Uploaded X-ray',
+
+        patientId:
+          'Not provided',
+
+
+        patientAge:
+          0,
+
+
+        patientSex:
+          'Other',
+
+
+        viewPosition:
+          'PA',
+
+
+        hospitalSource:
+          'Uploaded X-ray',
+
 
         imageUri,
 
+
         decision,
+
 
         decisionHeadline,
 
+
         decisionDescription,
+
 
         clinicalAction,
 
-        primaryPrediction: prediction,
 
-        primaryProbability: confidence,
+        primaryPrediction:
+          prediction,
 
-        /*
-         * Current FastAPI endpoint returns the top prediction
-         * rather than the complete 15-class probability vector.
-         */
-        predictions: [
-          {
-            label: prediction,
-            probability: confidence,
-            ciLower: confidence,
-            ciUpper: confidence,
-          },
-        ],
 
-        /*
-         * Learned temperature from validation calibration.
-         */
-        temperature: 1.0136176347732544,
+        primaryProbability:
+          confidence,
 
-        calibrated: true,
 
-        // -----------------------------------------
-        // UNCERTAINTY
-        // -----------------------------------------
+        predictions,
+
+
+        temperature,
+
+
+        calibrated,
+
+
         uncertainty: {
-          epistemicUncertainty: uncertainty,
-          predictiveEntropy: entropy,
 
-          /*
-           * The backend currently exposes the uncertainty
-           * value rather than a separately named variance.
-           */
-          mcDropoutVariance: uncertainty,
+          epistemicUncertainty:
+            uncertainty,
 
-          aleatoricEntropy: 0,
+          predictiveEntropy:
+            entropy,
 
-          samplesCount: 10,
+          mcDropoutVariance:
+            uncertainty,
 
-          level: uncertaintyLevel,
+          aleatoricEntropy:
+            0,
+
+          samplesCount,
+
+          level:
+            uncertaintyLevel,
         },
 
-        // -----------------------------------------
-        // OOD
-        // -----------------------------------------
+
         ood: {
-          mahalanobisDistance: oodScore,
+
+          mahalanobisDistance:
+            oodScore,
 
           /*
-           * The current backend does not expose the
-           * internal OOD threshold, so we do not claim
-           * a numeric threshold here.
+           * 0 is retained only as a compatibility
+           * sentinel because AnalysisResult currently
+           * expects a number.
+           *
+           * It must NOT be interpreted as a real
+           * OOD threshold.
            */
-          oodThreshold: 0,
+          oodThreshold:
+            0,
 
-          /*
-           * ABSTAIN is a safety decision, not necessarily
-           * proof of OOD. Therefore this status is based
-           * conservatively on the decision state.
-           */
           status:
-            decision === 'ABSTAIN'
-              ? 'Potential Out-of-Distribution Case'
-              : decision === 'UNCERTAIN'
-              ? 'Borderline Shift'
-              : 'In-Distribution',
+            oodStatus,
 
-          isOOD: decision === 'ABSTAIN',
+          isOOD,
         },
+
 
         decisionFactors,
 
-        isDemo: false,
+
+        isDemo:
+          false,
+
 
         processingTimeMs:
-          Math.round(performance.now() - startTime),
+          Math.round(
+            performance.now() -
+            startTime
+          ),
       };
 
-      // -----------------------------------------
-      // COMPLETE
-      // -----------------------------------------
-      onProgress?.('decision', 100);
-      onProgress?.('complete', 100);
 
-      // Save locally for the current session.
-      this.recordInHistory(analysisResult);
+      // =========================================
+      // STORE EXACT LIVE RESULT
+      // =========================================
+
+      inMemoryResults[
+        analysisResult.id
+      ] = analysisResult;
+
+
+      // =========================================
+      // HISTORY
+      // =========================================
+
+      this.recordInHistory(
+        analysisResult
+      );
+
+
+      // =========================================
+      // COMPLETE
+      // =========================================
+
+      onProgress?.(
+        'decision',
+        100
+      );
+
+
+      onProgress?.(
+        'complete',
+        100
+      );
+
 
       return analysisResult;
 
+
     } catch (error) {
+
       console.error(
         'FastAPI prediction failed:',
         error
       );
 
-      onProgress?.('error', 100);
+
+      onProgress?.(
+        'error',
+        100
+      );
+
 
       throw new Error(
         error instanceof Error
@@ -465,79 +743,140 @@ class ApiService {
     }
   }
 
-  /**
-   * Store analysis in the current browser session.
-   */
+
+  // =========================================
+  // HISTORY
+  // =========================================
+
   private recordInHistory(
     res: AnalysisResult
   ) {
+
     const existingIndex =
       this.inMemoryHistory.findIndex(
-        (h) => h.id === res.id
+        (h) =>
+          h.id === res.id
       );
 
-    const item: AnalysisHistoryItem = {
-      id: res.id,
 
-      timestamp: res.timestamp,
+    const item:
+      AnalysisHistoryItem = {
 
-      patientId: res.patientId,
+      id:
+        res.id,
 
-      prediction: res.primaryPrediction,
+      timestamp:
+        res.timestamp,
 
-      confidence: res.primaryProbability,
+      patientId:
+        res.patientId,
+
+      prediction:
+        res.primaryPrediction,
+
+      confidence:
+        res.primaryProbability,
 
       epistemicUncertainty:
-        res.uncertainty.epistemicUncertainty,
+        res.uncertainty
+          .epistemicUncertainty,
 
       uncertaintyLevel:
         res.uncertainty.level,
 
       oodScore:
-        res.ood.mahalanobisDistance,
+        res.ood
+          .mahalanobisDistance,
 
-      decision: res.decision,
+      decision:
+        res.decision,
 
       hospitalSource:
         res.hospitalSource,
     };
 
-    if (existingIndex >= 0) {
-      this.inMemoryHistory[existingIndex] = item;
+
+    if (
+      existingIndex >= 0
+    ) {
+
+      this.inMemoryHistory[
+        existingIndex
+      ] = item;
+
     } else {
-      this.inMemoryHistory.unshift(item);
+
+      this.inMemoryHistory.unshift(
+        item
+      );
     }
   }
 
-  /**
-   * Retrieve a specific analysis result.
-   *
-   * The current FastAPI backend does not have
-   * a persistent /api/results endpoint, so the
-   * frontend uses the current session/demo data.
-   */
+
+  // =========================================
+  // GET ANALYSIS RESULT
+  // =========================================
+
   async getAnalysisResult(
     id: string
   ): Promise<AnalysisResult> {
 
-    await new Promise((resolve) =>
-      setTimeout(resolve, 200)
+    await new Promise(
+      (resolve) =>
+        setTimeout(
+          resolve,
+          200
+        )
     );
 
-    if (DEMO_CASES[id]) {
+
+    // 1. Exact live result
+    if (
+      inMemoryResults[id]
+    ) {
+
+      return inMemoryResults[id];
+    }
+
+
+    // 2. Explicit demo case
+    if (
+      DEMO_CASES[id]
+    ) {
+
       return DEMO_CASES[id];
     }
 
+
+    // 3. History fallback
     const foundInHistory =
       this.inMemoryHistory.find(
-        (h) => h.id === id
+        (h) =>
+          h.id === id
       );
 
-    if (foundInHistory) {
-      return {
-        ...DEMO_CASES['XR-2026-001'],
 
-        id: foundInHistory.id,
+    if (
+      foundInHistory
+    ) {
+
+      const confidence =
+        foundInHistory.confidence;
+
+
+      const uncertainty =
+        foundInHistory
+          .epistemicUncertainty;
+
+
+      const decision =
+        foundInHistory.decision;
+
+
+      return {
+
+        id:
+          foundInHistory.id,
 
         timestamp:
           foundInHistory.timestamp,
@@ -545,111 +884,225 @@ class ApiService {
         patientId:
           foundInHistory.patientId,
 
+        patientAge:
+          0,
+
+        patientSex:
+          'Other',
+
+        viewPosition:
+          'PA',
+
+        hospitalSource:
+          foundInHistory.hospitalSource,
+
+        imageUri:
+          '',
+
+        decision,
+
+        decisionHeadline:
+          decision === 'ACCEPT'
+            ? 'Prediction passed the configured safety threshold'
+            : decision === 'UNCERTAIN'
+            ? 'Prediction requires additional review'
+            : 'AI has abstained from making a reliable prediction',
+
+        decisionDescription:
+          'Historical live result. Detailed backend metrics are not persisted by the current frontend session.',
+
+        clinicalAction:
+          decision === 'ACCEPT'
+            ? 'Prediction may be used as an automated draft and should still be clinically verified.'
+            : decision === 'UNCERTAIN'
+            ? 'Review the X-ray and model output before relying on the prediction.'
+            : 'Prediction withheld. Escalate to a qualified radiologist.',
+
         primaryPrediction:
           foundInHistory.prediction,
 
         primaryProbability:
-          foundInHistory.confidence,
+          confidence,
 
-        decision:
-          foundInHistory.decision,
+        predictions: [
+          {
+            label:
+              foundInHistory.prediction,
+
+            probability:
+              confidence,
+
+            ciLower:
+              confidence,
+
+            ciUpper:
+              confidence,
+          },
+        ],
+
+        /*
+         * Historical records do not persist the
+         * complete backend calibration metadata.
+         */
+        temperature:
+          1.0136176347732544,
+
+        calibrated:
+          true,
 
         uncertainty: {
-          ...DEMO_CASES['XR-2026-001'].uncertainty,
 
           epistemicUncertainty:
-            foundInHistory.epistemicUncertainty,
+            uncertainty,
+
+          predictiveEntropy:
+            0,
+
+          mcDropoutVariance:
+            uncertainty,
+
+          aleatoricEntropy:
+            0,
+
+          samplesCount:
+            10,
 
           level:
-            foundInHistory.uncertaintyLevel,
+            foundInHistory
+              .uncertaintyLevel,
         },
 
         ood: {
-          ...DEMO_CASES['XR-2026-001'].ood,
 
           mahalanobisDistance:
-            foundInHistory.oodScore,
+            foundInHistory
+              .oodScore,
 
-          isOOD:
-            foundInHistory.decision === 'ABSTAIN',
+          oodThreshold:
+            0,
 
           status:
-            foundInHistory.decision === 'ABSTAIN'
-              ? 'Potential Out-of-Distribution Case'
-              : 'In-Distribution',
+            'Potential Out-of-Distribution Case',
+
+          isOOD:
+            false,
         },
+
+        decisionFactors:
+          [],
+
+        isDemo:
+          false,
+
+        processingTimeMs:
+          0,
       };
     }
 
-    return DEMO_CASES['XR-2026-001'];
+
+    throw new Error(
+      `Analysis result not found: ${id}`
+    );
   }
 
-  /**
-   * Get analysis history.
-   *
-   * Currently uses the local in-memory session history.
-   */
-    /**
-   * Get analysis history.
-   *
-   * Currently uses the local in-memory session history.
-   */
-  async getAnalysisHistory(): Promise<AnalysisHistoryItem[]> {
-    await new Promise((resolve) =>
-      setTimeout(resolve, 200)
+
+  // =========================================
+  // ANALYSIS HISTORY
+  // =========================================
+
+  async getAnalysisHistory(): Promise<
+    AnalysisHistoryItem[]
+  > {
+
+    await new Promise(
+      (resolve) =>
+        setTimeout(
+          resolve,
+          200
+        )
     );
 
-    return [...this.inMemoryHistory];
+
+    return [
+      ...this.inMemoryHistory,
+    ];
   }
 
-  /**
-   * Get dashboard statistics.
-   *
-   * Currently uses the existing mock dashboard
-   * data with the current session history.
-   */
-  async getDashboardStats(): Promise<DashboardStats> {
-    await new Promise((resolve) =>
-      setTimeout(resolve, 250)
+
+  // =========================================
+  // DASHBOARD
+  // =========================================
+
+  async getDashboardStats(): Promise<
+    DashboardStats
+  > {
+
+    await new Promise(
+      (resolve) =>
+        setTimeout(
+          resolve,
+          250
+        )
     );
+
 
     return {
+
       ...MOCK_DASHBOARD_STATS,
 
       recentAnalyses:
-        [...this.inMemoryHistory.slice(0, 10)],
+        [
+          ...this.inMemoryHistory.slice(
+            0,
+            10
+          ),
+        ],
     };
   }
 
-  /**
-   * Get research model metrics.
-   *
-   * The current FastAPI backend does not expose
-   * a model-metrics endpoint, so the existing
-   * frontend mock data is retained here.
-   */
-  async getModelMetrics(): Promise<ModelMetrics> {
-    await new Promise((resolve) =>
-      setTimeout(resolve, 250)
+
+  // =========================================
+  // MODEL METRICS
+  // =========================================
+
+  async getModelMetrics(): Promise<
+    ModelMetrics
+  > {
+
+    await new Promise(
+      (resolve) =>
+        setTimeout(
+          resolve,
+          250
+        )
     );
+
 
     return MOCK_MODEL_METRICS;
   }
 
-  /**
-   * Get robustness metrics.
-   *
-   * The current FastAPI backend does not expose
-   * a robustness endpoint, so the existing
-   * frontend mock data is retained here.
-   */
-  async getRobustnessMetrics(): Promise<RobustnessMetrics> {
-    await new Promise((resolve) =>
-      setTimeout(resolve, 300)
+
+  // =========================================
+  // ROBUSTNESS METRICS
+  // =========================================
+
+  async getRobustnessMetrics(): Promise<
+    RobustnessMetrics
+  > {
+
+    await new Promise(
+      (resolve) =>
+        setTimeout(
+          resolve,
+          300
+        )
     );
+
 
     return MOCK_ROBUSTNESS_METRICS;
   }
 }
 
-export const apiService = new ApiService();
+
+export const apiService =
+  new ApiService();
