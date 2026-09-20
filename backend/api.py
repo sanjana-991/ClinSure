@@ -7,7 +7,12 @@ import torch
 import torch.nn as nn
 
 from PIL import Image
-from fastapi import FastAPI, UploadFile, File
+from fastapi import (
+    FastAPI,
+    UploadFile,
+    File,
+    HTTPException,
+)
 from fastapi.middleware.cors import CORSMiddleware
 from torchvision import models, transforms
 
@@ -331,19 +336,18 @@ async def predict(
     contents = await file.read()
 
     try:
+    image = Image.open(
+        io.BytesIO(contents)
+    ).convert("RGB")
 
-        image = Image.open(
-            io.BytesIO(contents)
-        ).convert("RGB")
-
-    except Exception:
-
-        return {
-            "error": (
-                "Uploaded file is not a valid image. "
-                "Please upload a JPG, PNG, or similar image file."
-            )
-        }
+except Exception:
+    raise HTTPException(
+        status_code=400,
+        detail=(
+            "Uploaded file is not a valid image. "
+            "Please upload a JPG, PNG, or similar image file."
+        ),
+    )
 
     x = transform(
         image
