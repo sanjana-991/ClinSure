@@ -70,7 +70,7 @@ export const UncertaintyPanel: React.FC<UncertaintyPanelProps> = ({ uncertainty 
             </div>
           </div>
           <div className="text-xl font-bold font-mono text-slate-900 mb-2">
-            {uncertainty.epistemicUncertainty.toFixed(2)}
+            {uncertainty.epistemicUncertainty.toFixed(6)}
           </div>
           <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
             <div
@@ -102,7 +102,7 @@ export const UncertaintyPanel: React.FC<UncertaintyPanelProps> = ({ uncertainty 
             </div>
           </div>
           <div className="text-xl font-bold font-mono text-slate-900 mb-2">
-            {uncertainty.predictiveEntropy.toFixed(2)}
+            {uncertainty.predictiveEntropy.toFixed(4)}
           </div>
           <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
             <div
@@ -128,7 +128,7 @@ export const UncertaintyPanel: React.FC<UncertaintyPanelProps> = ({ uncertainty 
             </div>
           </div>
           <div className="text-xl font-bold font-mono text-slate-900 mb-2">
-            {uncertainty.mcDropoutVariance.toFixed(2)}
+            {uncertainty.mcDropoutVariance.toFixed(6)}
           </div>
           <div className="h-2 w-full bg-slate-200 rounded-full overflow-hidden">
             <div
@@ -147,7 +147,7 @@ export const UncertaintyPanel: React.FC<UncertaintyPanelProps> = ({ uncertainty 
         <span className="font-semibold text-slate-800">Clinical Interpretation: </span>
         {uncertainty.level === 'Low' && (
           <span>
-            The model demonstrates robust internal consensus across dropout sub-networks. Epistemic uncertainty is well below the clinical gating threshold (&lt;0.35).
+            The model demonstrates robust internal consensus across stochastic forward passes. The observed epistemic uncertainty is low for this case.
           </span>
         )}
         {uncertainty.level === 'Moderate' && (

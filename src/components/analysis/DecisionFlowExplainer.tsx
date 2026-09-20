@@ -1,5 +1,7 @@
 import React, { useState } from 'react';
+
 import { Decision, DecisionFactor } from '../../types';
+
 import {
   CheckCircle2,
   AlertTriangle,
@@ -10,6 +12,7 @@ import {
   Shield,
   Scale
 } from 'lucide-react';
+
 import { DecisionBadge } from '../common/DecisionBadge';
 
 interface DecisionFlowExplainerProps {

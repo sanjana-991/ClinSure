@@ -1,5 +1,7 @@
 import React from 'react';
+
 import { PredictionItem } from '../../types';
+
 import { HelpCircle } from 'lucide-react';
 
 interface ProbabilityBarsProps {
@@ -32,7 +34,7 @@ export const ProbabilityBars: React.FC<ProbabilityBarsProps> = ({
           </h3>
 
           <p className="text-xs text-slate-500 mt-0.5">
-            Calibrated posterior probabilities with 95% Bayesian credible intervals
+            Calibrated posterior probabilities
           </p>
         </div>
 
@@ -56,12 +58,6 @@ export const ProbabilityBars: React.FC<ProbabilityBarsProps> = ({
           const percent =
             Math.round(item.probability * 1000) / 10;
 
-          const ciLowerPct =
-            Math.round(item.ciLower * 1000) / 10;
-
-          const ciUpperPct =
-            Math.round(item.ciUpper * 1000) / 10;
-
           return (
             <div
               key={item.label}
@@ -79,10 +75,6 @@ export const ProbabilityBars: React.FC<ProbabilityBarsProps> = ({
                 </span>
 
                 <div className="flex items-center gap-2 font-mono">
-                  <span className="text-[11px] text-slate-400">
-                    95% CI: [{ciLowerPct}% - {ciUpperPct}%]
-                  </span>
-
                   <span
                     className={`font-bold ${
                       isPrimary
@@ -118,8 +110,7 @@ export const ProbabilityBars: React.FC<ProbabilityBarsProps> = ({
       <div className="mt-4 pt-3 border-t border-slate-100 flex items-center justify-between text-[11px] text-slate-500">
         <span className="flex items-center gap-1">
           <HelpCircle className="w-3 h-3 text-slate-400" />
-
-          Credible intervals estimated via {samplesCount} stochastic MC-Dropout passes.
+          Calibrated probability shown for each predicted class.
         </span>
 
         <span className="font-mono text-[10px] text-slate-400">
