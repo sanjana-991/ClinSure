@@ -233,17 +233,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:3000",
-        "http://127.0.0.1:3000",
-        "http://localhost:3001",
-        "http://127.0.0.1:3001",
-        "http://localhost:3002",
-        "http://127.0.0.1:3002",
-        "http://localhost:5173",
-        "http://127.0.0.1:5173",
-        "https://clin-sure-ltq4qjuo7-sanjana-795e.vercel.app",
-    ],
+    allow_origins=["*"],
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -328,7 +318,7 @@ def mahalanobis_score(feature):
 # =========================
 
 def mc_dropout_prediction(
-    x,
+    features,
     passes=MC_DROPOUT_PASSES,
 ):
     """
@@ -339,8 +329,6 @@ def mc_dropout_prediction(
     stochastic pass so uncertainty metrics
     use calibrated probabilities.
     """
-
-    features = get_features(x)
 
     predictions = []
 
@@ -461,7 +449,8 @@ async def predict(
     # =========================
 
     with torch.no_grad():
-        logits = model(x)
+        features = get_features(x)
+        logits = model.classifier(features)
 
         calibrated_logits = (
             logits / TEMPERATURE
@@ -522,7 +511,7 @@ async def predict(
             uncertainty,
             entropy,
         ) = mc_dropout_prediction(
-            x,
+            features,
             passes=MC_DROPOUT_PASSES,
         )
 
@@ -536,12 +525,8 @@ async def predict(
     # =========================
 
     with torch.no_grad():
-        feature = get_features(
-            x
-        )
-
         ood_score = mahalanobis_score(
-            feature
+            features
         )
 
     is_ood = (
