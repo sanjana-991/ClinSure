@@ -26,7 +26,18 @@ export const ResultsPage: React.FC = () => {
   const { id } = useParams<{ id: string }>();
   const [result, setResult] = useState<AnalysisResult | null>(null);
   const [isLoading, setIsLoading] = useState<boolean>(true);
+  const [backendDevice, setBackendDevice] = useState<string>('');
   const navigate = useNavigate();
+
+  // Fetch device info from /health once on mount (best-effort, non-blocking)
+  useEffect(() => {
+    const apiBase = import.meta.env.VITE_API_URL || '';
+    if (!apiBase) return;
+    fetch(`${apiBase}/health`)
+      .then((r) => r.json())
+      .then((h) => { if (h.device) setBackendDevice(String(h.device)); })
+      .catch(() => { /* ignore — health check is informational only */ });
+  }, []);
 
   useEffect(() => {
     const fetchResult = async () => {
@@ -298,14 +309,8 @@ export const ResultsPage: React.FC = () => {
               </span>
             </div>
 
-            {/*
-             * Your current FastAPI /health endpoint reports:
-             * device = CPU
-             *
-             * Therefore do NOT display the old hardcoded A100.
-             */}
             <span className="font-mono text-[11px] text-slate-500">
-              Hardware: CPU
+              Hardware: {backendDevice || 'unknown'}
             </span>
 
           </div>
