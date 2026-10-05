@@ -318,7 +318,7 @@ def mahalanobis_score(feature):
 # =========================
 
 def mc_dropout_prediction(
-    x,
+    features,
     passes=MC_DROPOUT_PASSES,
 ):
     """
@@ -329,8 +329,6 @@ def mc_dropout_prediction(
     stochastic pass so uncertainty metrics
     use calibrated probabilities.
     """
-
-    features = get_features(x)
 
     predictions = []
 
@@ -451,7 +449,8 @@ async def predict(
     # =========================
 
     with torch.no_grad():
-        logits = model(x)
+        features = get_features(x)
+        logits = model.classifier(features)
 
         calibrated_logits = (
             logits / TEMPERATURE
@@ -512,7 +511,7 @@ async def predict(
             uncertainty,
             entropy,
         ) = mc_dropout_prediction(
-            x,
+            features,
             passes=MC_DROPOUT_PASSES,
         )
 
@@ -526,12 +525,8 @@ async def predict(
     # =========================
 
     with torch.no_grad():
-        feature = get_features(
-            x
-        )
-
         ood_score = mahalanobis_score(
-            feature
+            features
         )
 
     is_ood = (
